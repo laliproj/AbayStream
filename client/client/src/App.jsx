@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Download, Globe, Heart, BarChart3, Settings, User, Monitor, Play, ShieldCheck, Activity } from 'lucide-react';
+import { Download, Globe, Heart, BarChart3, Settings, User, Monitor, Play, ShieldCheck, Activity, Zap } from 'lucide-react';
 
 const AbaySteam = () => {
   const [url, setUrl] = useState("");
@@ -9,6 +9,10 @@ const AbaySteam = () => {
   const [activeTab, setActiveTab] = useState('downloader');
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("");
+
+  // --- NEW STATE FOR PROGRESS TRACKING ---
+  const [progress, setProgress] = useState("0%");
+  const [isProcessing, setIsProcessing] = useState(false);
 
   // AUTO-PREVIEW LOGIC: Fires when link is pasted
   useEffect(() => {
@@ -25,35 +29,66 @@ const AbaySteam = () => {
     fetchThumb();
   }, [url]);
 
+  // --- UPDATED DOWNLOAD LOGIC WITH POLLING ---
   const handleDownload = async () => {
     if (!url) return setStatus("TARGET MISSING: PASTE URL");
+
     setLoading(true);
+    setIsProcessing(true);
+    setProgress("0%");
     setStatus("INITIATING EXTRACTION SEQUENCE...");
-    
+
     try {
-      const res = await axios.get(`http://localhost:8000/download?url=${url}&quality=${quality}`);
-      if (res.data.status === "success") {
-        setStatus("SUCCESS: FILE SAVED TO PC DOWNLOADS");
-      } else {
-        setStatus(`FAILED: ${res.data.error}`);
-      }
+      // 1. Trigger the extraction and get a task_id
+      const res = await axios.post(`http://localhost:8000/extract`, { url, quality });
+      const taskId = res.data.task_id;
+
+      // 2. Poll the progress endpoint every 1 second
+      const pollInterval = setInterval(async () => {
+        try {
+          const progressRes = await axios.get(`http://localhost:8000/progress/${taskId}`);
+          const { status: taskStatus, percent } = progressRes.data;
+
+          if (taskStatus === 'downloading') {
+            setProgress(percent);
+            setStatus(`DOWNLOADING: ${percent}`);
+          } else if (taskStatus === 'merging') {
+            setProgress("100%");
+            setStatus("FFMPEG: MERGING MEDIA STREAMS...");
+          } else if (taskStatus === 'finished') {
+            clearInterval(pollInterval);
+            setProgress("100%");
+            setStatus("SUCCESS: FILE SAVED TO PC DOWNLOADS");
+            setLoading(false);
+            setIsProcessing(false);
+          } else if (taskStatus === 'error') {
+            clearInterval(pollInterval);
+            setStatus("FAILED: EXTRACTION ERROR");
+            setLoading(false);
+            setIsProcessing(false);
+          }
+        } catch (err) {
+          console.error("Telemetry lost...");
+        }
+      }, 1000);
+
     } catch (err) {
       setStatus("LINK SEVERED: CHECK BACKEND NODE");
-    } finally {
       setLoading(false);
+      setIsProcessing(false);
     }
   };
 
   return (
     <div className="min-h-screen flex bg-[#050505] text-white font-sans selection:bg-cyan-500/30">
-      
+
       {/* SIDEBAR: Kept from previous professional layout */}
       <aside className="w-64 border-r border-white/5 p-6 flex flex-col gap-8 bg-black/40 backdrop-blur-xl">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 bg-cyan-500 rounded-lg shadow-[0_0_15px_rgba(6,182,212,0.4)]"></div>
           <h1 className="text-xl font-black italic tracking-tighter uppercase">ABAY<span className="text-cyan-500 text-sm">Steam</span></h1>
         </div>
-        
+
         <nav className="flex flex-col gap-1">
           <NavItem icon={<Download size={18}/>} label="Downloader" active={activeTab === 'downloader'} onClick={() => setActiveTab('downloader')} />
           <NavItem icon={<Globe size={18}/>} label="Ethio-Discovery" active={activeTab === 'discovery'} onClick={() => setActiveTab('discovery')} />
@@ -93,19 +128,19 @@ const AbaySteam = () => {
 
         <section className="max-w-5xl">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            
+
             {/* DOWNLOADER MODULE */}
             <div className="lg:col-span-2 bg-gradient-to-br from-white/10 to-white/5 border border-white/10 rounded-[40px] p-10 backdrop-blur-3xl shadow-2xl">
               <label className="text-[10px] font-black text-cyan-500 uppercase tracking-[0.4em] mb-6 block">Target Identification</label>
-              <input 
-                className="w-full bg-transparent border-b-2 border-white/10 p-4 outline-none focus:border-cyan-500 transition-all text-xl mb-12 placeholder:text-white/5" 
-                placeholder="INPUT NEURAL LINK (URL)..." 
+              <input
+                className="w-full bg-transparent border-b-2 border-white/10 p-4 outline-none focus:border-cyan-500 transition-all text-xl mb-12 placeholder:text-white/5"
+                placeholder="INPUT NEURAL LINK (URL)..."
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
               />
 
-              <div className="flex flex-col sm:flex-row gap-4">
-                <select 
+              <div className="flex flex-col sm:flex-row gap-4 mb-8">
+                <select
                   value={quality}
                   onChange={(e) => setQuality(e.target.value)}
                   className="flex-1 bg-black/60 border border-white/10 p-5 rounded-3xl outline-none focus:border-cyan-400 cursor-pointer appearance-none text-sm font-bold"
@@ -116,14 +151,40 @@ const AbaySteam = () => {
                   <option value="mp3">AUDIO (HQ MP3)</option>
                 </select>
 
-                <button 
+                <button
                   onClick={handleDownload}
                   disabled={loading}
-                  className="flex-[1.5] bg-cyan-500 hover:bg-cyan-400 text-black font-black py-5 rounded-3xl transition-all shadow-[0_0_40px_rgba(6,182,212,0.3)] disabled:opacity-30 group"
+                  className="flex-[1.5] bg-cyan-500 hover:bg-cyan-400 text-black font-black py-5 rounded-3xl transition-all shadow-[0_0_40px_rgba(6,182,212,0.3)] disabled:opacity-30 group flex items-center justify-center gap-2"
                 >
+                  {loading ? (
+                    <Zap size={18} className="animate-spin" />
+                  ) : (
+                    <Download size={18} />
+                  )}
                   {loading ? "EXTRACTING DATA..." : "EXECUTE RETRIEVAL"}
                 </button>
               </div>
+
+              {/* --- NEW PROGRESS BAR SECTION --- */}
+              {isProcessing && (
+                <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                  <div className="flex justify-between items-end">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 bg-cyan-500 rounded-full animate-ping"></div>
+                      <span className="text-[10px] font-black uppercase text-cyan-500 tracking-tighter">Neural Link Active</span>
+                    </div>
+                    <span className="text-2xl font-black italic text-white/80">{progress}</span>
+                  </div>
+                  <div className="h-2 bg-white/5 rounded-full border border-white/10 p-[2px] overflow-hidden">
+                    <div
+                      className="h-full bg-cyan-500 rounded-full shadow-[0_0_15px_rgba(6,182,212,0.8)] transition-all duration-300 ease-out relative"
+                      style={{ width: progress }}
+                    >
+                      <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent w-full animate-[shimmer_2s_infinite]"></div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {status && (
                 <div className="mt-8 flex items-center gap-3 p-4 bg-cyan-500/5 border border-cyan-500/20 rounded-2xl animate-in slide-in-from-top-2">
@@ -144,7 +205,7 @@ const AbaySteam = () => {
                   </div>
                   <h3 className="font-bold text-sm leading-tight mb-2 line-clamp-2 text-white/90">{metadata.title}</h3>
                   <p className="text-[10px] text-cyan-500 font-black uppercase tracking-widest mb-6">{metadata.uploader}</p>
-                  
+
                   <div className="grid grid-cols-2 gap-4 pt-4 border-t border-white/10">
                     <div className="text-center">
                       <p className="text-[9px] text-white/20 uppercase">Duration</p>
@@ -172,7 +233,7 @@ const AbaySteam = () => {
 };
 
 const NavItem = ({ icon, label, active, onClick }) => (
-  <button 
+  <button
     onClick={onClick}
     className={`flex items-center gap-4 p-4 rounded-2xl transition-all duration-300 ${active ? 'bg-cyan-500 text-black shadow-[0_0_25px_rgba(6,182,212,0.4)] font-black' : 'opacity-40 hover:opacity-100 hover:bg-white/5'}`}
   >
